@@ -8,25 +8,23 @@ import pickle
 import re
 import time
 import logging
-from sentence_transformers import SentenceTransformer
-
+import requests
+import os
 
 # ------------------------------------------------------------
 # 🚀 APP INITIALIZATION
 # ------------------------------------------------------------
 app = FastAPI(
-    title="SHL Assessment Recommender API",
-    description="Semantic retrieval API for SHL assessments using SentenceTransformer + FAISS",
-    version="1.0.0"
+    title="SHL Assessment Recommender API (Gemini + FAISS)",
+    description="Semantic retrieval API for SHL assessments using Gemini embeddings + FAISS",
+    version="2.0.0"
 )
-
 
 # ------------------------------------------------------------
 # 🔧 CONFIGURATION & LOGGING
 # ------------------------------------------------------------
 logging.basicConfig(filename="trace.log", level=logging.INFO)
 
-# Load prebuilt FAISS index and metadata
 INDEX_FILE = "index.faiss"
 META_FILE = "meta.pkl"
 
@@ -36,8 +34,12 @@ try:
 except Exception as e:
     raise RuntimeError(f"❌ Failed to load index or metadata: {e}")
 
-# Load embedding model
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# Gemini API setup
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/textembedding-gecko@003:embedContent"
+
+if not GEMINI_API_KEY:
+    raise RuntimeError("❌ GEMINI_API_KEY not set in environment variables.")
 
 # ------------------------------------------------------------
 # 🔠 TEST TYPE MAPPING
@@ -83,6 +85,26 @@ def parse_duration_from_query(q: str):
         return 60
     return None
 
+
+def get_gemini_embedding(text: str) -> np.ndarray:
+    """Fetch text embedding vector from Google Gemini API."""
+    headers = {"Content-Type": "application/json"}
+    params = {"key": GEMINI_API_KEY}
+    payload = {
+        "model": "models/textembedding-gecko@003",
+        "content": {"parts": [{"text": text}]}
+    }
+
+    response = requests.post(GEMINI_URL, headers=headers, params=params, json=payload)
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {response.text}")
+
+    try:
+        emb = response.json()["embedding"]["values"]
+        return np.array(emb, dtype=np.float32)
+    except KeyError:
+        raise HTTPException(status_code=500, detail=f"Invalid response format: {response.text}")
+
 # ------------------------------------------------------------
 # 📦 DATA MODELS
 # ------------------------------------------------------------
@@ -100,45 +122,44 @@ class Assessment(BaseModel):
 class RecommendResponse(BaseModel):
     recommended_assessments: List[Assessment]
 
-
-
+# ------------------------------------------------------------
+# 🌐 ENDPOINTS
+# ------------------------------------------------------------
 @app.get("/")
 def root():
-    return {
-        "message": "✅ SHL Recommender API is live. Use /health or /recommend endpoints."
-    }
+    return {"message": "✅ SHL Recommender API (Gemini + FAISS) is live."}
 
-# ------------------------------------------------------------
-# ✅ HEALTH ENDPOINT
-# ------------------------------------------------------------
 @app.get("/health")
 def health_check():
-    """Basic health check endpoint."""
-    return {"status": "healthy"}
+    return {"status": "healthy", "items_loaded": len(df_meta)}
 
 # ------------------------------------------------------------
-# 🔍 RECOMMENDATION ENDPOINT
+# 🔍 RECOMMENDATION ENDPOINT (Gemini-powered)
 # ------------------------------------------------------------
 @app.post("/recommend", response_model=RecommendResponse)
 def recommend(req: RecommendRequest):
-    """Return top 10 SHL assessments matching the input query."""
-    if not req.query.strip():
+    """Return top 10 SHL assessments matching the input query using Gemini embeddings."""
+    query = req.query.strip()
+    if not query:
         raise HTTPException(status_code=400, detail="Query is required")
 
     start_time = time.time()
-    logging.info(f"Received query: {req.query}")
+    logging.info(f"Received query: {query}")
 
-    # ---- 1️⃣ Embed query ----
-    q_emb = model.encode([req.query], normalize_embeddings=True)
-    faiss.normalize_L2(q_emb.reshape(1, -1))
+    # ---- 1️⃣ Get embedding from Gemini API ----
+    try:
+        q_emb = get_gemini_embedding(query).reshape(1, -1)
+        faiss.normalize_L2(q_emb)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding generation failed: {e}")
 
-    # ---- 2️⃣ Search top 30 nearest embeddings ----
-    D, I = index.search(q_emb.reshape(1, -1), 30)
+    # ---- 2️⃣ Search FAISS ----
+    D, I = index.search(q_emb, 30)
     results = df_meta.iloc[I[0]].copy()
     results["semantic_score"] = D[0][:len(results)]
 
     # ---- 3️⃣ Duration-aware re-ranking ----
-    desired_time = parse_duration_from_query(req.query)
+    desired_time = parse_duration_from_query(query)
     if desired_time:
         def duration_score(d):
             try:
@@ -147,9 +168,7 @@ def recommend(req: RecommendRequest):
             except:
                 return 0
         results["duration_score"] = results["Assessment length"].apply(duration_score)
-        results["combined_score"] = (
-            0.8 * results["semantic_score"] + 0.2 * results["duration_score"]
-        )
+        results["combined_score"] = 0.8 * results["semantic_score"] + 0.2 * results["duration_score"]
     else:
         results["combined_score"] = results["semantic_score"]
 
