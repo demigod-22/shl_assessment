@@ -34,9 +34,7 @@ try:
 except Exception as e:
     raise RuntimeError(f"❌ Failed to load index or metadata: {e}")
 
-# Gemini API setup
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/textembedding-gecko@003:embedContent"
+
 
 if not GEMINI_API_KEY:
     raise RuntimeError("❌ GEMINI_API_KEY not set in environment variables.")
@@ -86,25 +84,52 @@ def parse_duration_from_query(q: str):
     return None
 
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not set in environment")
+
+# Correct endpoint for gemini-embedding-001
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
+
 def get_gemini_embedding(text: str) -> np.ndarray:
-    """Fetch text embedding vector from Google Gemini API."""
-    headers = {"Content-Type": "application/json"}
-    params = {"key": GEMINI_API_KEY}
+    """
+    Call Gemini gemini-embedding-001 and return a float32 numpy array.
+    Raises HTTPException on any non-200 response (so your FastAPI route returns a 500).
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY   # recommended header auth
+    }
+
     payload = {
-        "model": "textembedding-gecko@003",
+        "model": "gemini-embedding-001",
         "content": {"parts": [{"text": text}]}
     }
 
-    response = requests.post(GEMINI_URL, headers=headers, params=params, json=payload)
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Gemini API error: {response.text}")
-
     try:
-        emb = response.json()["embedding"]["values"]
-        return np.array(emb, dtype=np.float32)
-    except KeyError:
-        raise HTTPException(status_code=500, detail=f"Invalid response format: {response.text}")
+        resp = requests.post(GEMINI_URL, headers=headers, json=payload, timeout=30)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Embedding request failed: {e}")
 
+    if resp.status_code != 200:
+        # include body so logs show the provider error
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {resp.status_code}: {resp.text}")
+
+    j = resp.json()
+    # expected shape: {"embedding": {"values": [...]}} or similar nested shapes
+    # try a couple of reasonable paths
+    for path in (("embedding","values"), ("data",0,"embedding","values"), ("data",0,"embedding")):
+        cur = j
+        try:
+            for k in path:
+                cur = cur[k]
+            arr = np.array(cur, dtype=np.float32)
+            return arr
+        except Exception:
+            continue
+
+    # if we reach here, response format was unexpected
+    raise HTTPException(status_code=500, detail=f"Unexpected Gemini response structure: {j}")
 # ------------------------------------------------------------
 # 📦 DATA MODELS
 # ------------------------------------------------------------
