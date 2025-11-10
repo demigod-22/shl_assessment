@@ -35,10 +35,6 @@ except Exception as e:
     raise RuntimeError(f"❌ Failed to load index or metadata: {e}")
 
 
-
-if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY not set in environment variables.")
-
 # ------------------------------------------------------------
 # 🔠 TEST TYPE MAPPING
 # ------------------------------------------------------------
