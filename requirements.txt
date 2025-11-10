@@ -3,5 +3,4 @@ uvicorn
 pandas
 numpy
 faiss-cpu
-sentence-transformers
-tqdm
+requests
