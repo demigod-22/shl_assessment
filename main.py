@@ -195,7 +195,7 @@ def recommend(req: RecommendRequest):
 
     # ---- 4️⃣ Get Top 10 ----
     top = results.sort_values("combined_score", ascending=False).head(10)
-
+    print(top)
     recs = []
     for _, row in top.iterrows():
         try:
