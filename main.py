@@ -91,7 +91,7 @@ def get_gemini_embedding(text: str) -> np.ndarray:
     headers = {"Content-Type": "application/json"}
     params = {"key": GEMINI_API_KEY}
     payload = {
-        "model": "models/textembedding-gecko@003",
+        "model": "textembedding-gecko@003",
         "content": {"parts": [{"text": text}]}
     }
 
